@@ -1,2 +1,3 @@
 # Bayes-Stroke-Project
-Finasl project for Bayesian Statistics class
+
+Final project for Bayesian Statistics class
