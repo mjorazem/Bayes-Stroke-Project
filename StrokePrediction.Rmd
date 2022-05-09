@@ -1,0 +1,1489 @@
+---
+title: Causal Inference for Stroke Risk
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide  
+---
+
+- **Mary Orazem**:
+- **801213446**: 
+
+**Specify the libraries to import**
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(kableExtra)
+library(rethinking)
+library(dagitty)
+set.seed(333)
+```
+
+This study was performed as a final project in a Bayesian Statistics class.
+
+The R code for each code block is hidden and can be displayed by clicking
+the Code bottom on the right side of this document.  
+Optionally, if you are interested in seeing all the code, you can select the 
+code drop down at the top of the document and select 'Show All Code'.
+
+## Objective
+
+According to the World Health Organization (WHO), stroke is the 2nd leading 
+cause of death globally, responsible for approximately 11% of total deaths. 
+In the medical literature it states that hypertension is the most prevalent 
+risk factor for stroke. The literature also states that overweight individuals 
+have twice the risk factor for stroke than normal weight individuals.
+
+My main goal is to compare the total causal effect of hypertension on stroke  
+risk to the total causal effect of BMI (body mass index) on stroke risk. 
+The two models will also be compared for out-of-sample prediction.
+In addition, two other models will be examined: total causal effect of age 
+and gender on stroke risk. 
+
+## The Stroke Prediction Dataset 
+
+I found this stroke dataset on Kaggle. It has been used to predict whether 
+a patient is likely to get stroke based on the input parameters such as 
+gender, age, BMI, and hypertension. Each row in the data provides relevant 
+information about one patient.
+
+Click the following link to go to the dataset source:
+
+[Dataset Source](https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset)
+
+The dataset has 5110 observations and 12 features. After doing some internet 
+searches about stroke risk factors and doing exploratory data analysis on the 
+dataset to locate missing variable values, the dataset was reduced to 4072
+observations and 5 variables. At the end of this document are the list of 
+references I used to understand the stroke risk factors.
+
+The dataset has less than 5% stroke cases. It is very unbalanced. I am
+not sure how this could affect the model and interpretations outside of 
+prediction, where it can be a big problem and should be handled using 
+a SMOTE algorithm to intelligently oversample the minority cases.
+
+## Data processing and exploratory data analysis
+
+### Data Pre-processing
+
+**Eliminating unwanted features**
+
+The id, Residence_type(Urban, Rural), work_type(5 levels), and
+Ever_Married(Yes, No) variables were dropped due to low relevance. 
+The Heart_Disease(0, 1), smoking_status(Yes, Formerly, Never, Unknown), 
+and Avg_glucose_level variables were initially considered with the first 
+draft of the DAG. It was decided to make the task less complicated, so
+these were also dropped. The smoking_status variable would have been 
+retained, however it had 1892 observations of 'Unknown'.
+
+The remaining features are:
+
+**stroke(0,1)**
+
+**hypertension(0,1)**
+
+**gender("Male","Female")**
+
+**bmi**
+
+**age**
+
+Each of these features has a small to medium degree of direct or indirect
+causal effect on stroke risk.
+
+**Read in the dataset and drop features**
+
+```{r message=TRUE, warning=FALSE}
+
+# Read in dataset
+df <- read.csv(file = 'stroke-prediction-full.csv')
+
+# Interrogate the dataset
+summary(df)
+cat("\n")
+
+# Look at smoking levels
+table(df$smoking_status)
+cat("\n")
+
+# Drop 7 columns: : 
+stroke_df = subset(df, select = -c(id, ever_married, heart_disease,
+                                   avg_glucose_level, smoking_status,
+                                   work_type, Residence_type))
+
+# View top three observations
+head(stroke_df, 3)
+cat("\n")
+
+# Summarize dataset
+summary(stroke_df)
+
+```
+
+**Eliminating unwanted observations**
+
+The dataset has an abundance of observations. About a thousand observations
+were dropped for these reasons:
+
+1. Drop all patients younger than 18.
+
+2. The BMI measurement was missing on 201 observations. These observations 
+were dropped. 
+
+3. There was one observation with gender of 'Other'. This was also 
+dropped.
+
+**Remove rows with missing values and children**
+
+```{r message=TRUE, warning=FALSE}
+# Retain only adults
+stroke_df <- stroke_df[stroke_df$age >= 18, ]
+
+# Convert the 'N/A' to NA in bmi field
+stroke_df$bmi[stroke_df$bmi == "N/A" ] <- NA
+
+# Make bmi column numeric
+stroke_df$bmi <- as.numeric(as.character(stroke_df$bmi))
+
+# Convert the 'Other' to NA in gender field
+stroke_df$gender[stroke_df$gender == "Other" ] <- NA
+
+# Remove rows
+stroke_df <- na.omit(stroke_df)
+
+# Summarize dataset
+summary(stroke_df)
+```
+### Exploratory Data Analysis
+
+The outcome variable is stroke and it indicates whether or not the 
+patient has had a stroke. The other four variables are predictors. 
+Gender (M/F) and hypertension (0,1) are categorical variables. 
+Hypertension indicates whether or not the patient has high blood 
+pressure. Both age and BMI are continuous.
+BMI is body mass index computed using a person's height and weight. 
+
+**Display descriptive statistics**
+
+The code below creates small pivot tables for investigating 
+the dataset.
+
+**Divide Age and BMI into three groups for EDA**
+
+```{r message=TRUE, warning=FALSE}
+# Copy stroke_df into a new data.frame
+df_grp <- stroke_df
+
+df_grp$age_grp <- cut(df_grp$age, 
+                   breaks=c(17, 41, 59, 83), 
+                   labels=c("young", "mid_age", "old"))
+
+df_grp$bmi_grp <- cut(df_grp$bmi, 
+                   breaks=c(0, 25, 30, 100), 
+                   labels=c("normal", "overwt", "obese"))
+
+```
+
+**Create pivot tables to display relationships between variables**
+
+```{r message=TRUE, warning=FALSE}
+
+# Display the level counts for the categorical variables
+
+# Stroke
+table(df_grp$stroke, dnn="Stroke") %>% 
+    kbl(caption = "Stroke Counts") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+There are only 208 patients out of 4072 who have had a stroke.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Display the level counts for the categorical variables
+
+# Gender
+table(df_grp$gender, dnn="Gender") %>% 
+    kbl(caption = "Gender Counts") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+61% of the patients are women.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Display the level counts for the categorical variables
+
+# Gender by Stroke
+table(df_grp$gender, stroke_df$stroke, dnn="Gender") %>% 
+    kbl(caption = "Gender by Stroke") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+4.8% of women had a stroke.
+
+5.6% of men had a stroke.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Display the level counts for the categorical variables
+
+# Hypertension
+table(df_grp$hypertension, dnn="Hypertension") %>% 
+    kbl(caption = "Hypertension Counts") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+11% of the patients had hypertension.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Display the level counts for the categorical variables
+
+# Hypertension by Stroke
+table(df_grp$hypertension, stroke_df$stroke, dnn="Hypertension") %>% 
+    kbl(caption = "Hypertension by Stroke") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+4% of patients who have hypertension also had a stroke.
+
+13% of patients who did not have hypertension had a stroke.
+
+```{r message=TRUE, warning=FALSE}
+
+# Get age and BMI statistics form a reduced data.frame
+
+gen_bmi_df = subset(df_grp, select = c(age, bmi))
+
+summary(gen_bmi_df) %>% 
+    kbl(caption = "Age and BMI Statistics") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+The above table shows the summary statistics for age and bmi.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Get age groups
+
+# Age_Grp
+table(df_grp$age_grp, dnn="Age_Grp") %>% 
+    kbl(caption = "Age_Grp Counts") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+
+The age variable is grouped into young, middle aged and old.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Get age groups
+
+# Age_Grp by Stroke
+table(df_grp$age_grp, df_grp$stroke, dnn="Age_Grp") %>% 
+    kbl(caption = "Age_Grp by Stroke") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+0.35% of young (< 41) patients had a stroke.
+
+3.9% of middle aged (41 - 59) patients had a stroke.
+
+12% of old (> 59) patients had a stroke.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Get bmi groups
+
+# BMI_Grp
+table(df_grp$bmi_grp, dnn="BMI_Grp") %>% 
+    kbl(caption = "BMI_Grp Counts") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+
+The bmi variable is grouped into normal, overweight and obese.
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Get bmi groups
+
+# BMI_Grp by Stroke
+table(df_grp$bmi_grp, df_grp$stroke, dnn="BMI_Grp") %>% 
+    kbl(caption = "BMI_Grp by Stroke") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+
+4.1% of normal patients had a stroke.
+
+5.7% of overweight patients had a stroke.
+
+5.2% of obese patients had a stroke.
+
+
+### Rest of Data Pre-processing
+
+**Standardize numerics**
+
+Age and BMI features need to be standardized. Each variable value is divided 
+by its standard deviation after subtracting the mean.  
+The name of the new variables has '_std' added and 
+the old variables are removed.
+
+```{r message=TRUE, warning=FALSE}
+
+# Standardize the Age and BMI variables
+# Create Add _std to column name
+stroke_df$age_std <- standardize(stroke_df$age)
+stroke_df$bmi_std <- standardize(stroke_df$bmi)
+
+# Drop old columns
+stroke_df <- subset(stroke_df, select = -c(age, bmi))
+```
+
+**Prepare gender and hypertension features for modeling**
+
+The categorical variables are converted to index integers,
+instead of dummy variables. In R, the indexes start at 1.
+So binary categorical variables, gender and hypertension
+are changed to 1 and 2. 
+
+Gender: Male = 1, Female = 2
+
+Hypertension: No Hypertension = 1, Hypertension = 2
+
+```{r message=TRUE, warning=FALSE}
+
+# Convert categorical variables to index integers
+# Make hypertension, gender and stroke integers: 1, 2
+
+stroke_df$gender <- ifelse(stroke_df$gender == 'Male', '1', '2')
+stroke_df$gender <- as.integer(stroke_df$gender)
+
+stroke_df$hypertension <- stroke_df$hypertension + 1
+stroke_df$hypertension <- as.integer(stroke_df$hypertension)
+
+```
+
+## Model Building
+
+### Scientific model: the DAG
+
+A directed acyclic graph (DAG) is used to describe the causal
+relationships between the variables in a model. Special rules are used
+to determine which variables should be retained in the model to study
+the total causal effects or direct causal effects of an (exposure) 
+independent variable on a (outcome) dependent variable.
+
+**Use Daggity to draw the DAG for this study**
+
+```{r message=TRUE, warning=FALSE}
+
+# Outcome: stroke
+# Exposure: hypertension
+# Age is independent of Gender
+
+g <- dagitty('
+dag {
+bb="0,0,1,1"
+Age [pos="0.335,0.580"]
+BMI [pos="0.485,0.665"]
+Gender [pos="0.635,0.580"]
+Hypertension [exposure,pos="0.585,0.235"]
+Stroke [outcome,pos="0.385,0.235"]
+Age -> BMI
+Age -> Hypertension
+Age -> Stroke
+BMI -> Hypertension
+BMI -> Stroke
+Gender -> BMI
+Gender -> Hypertension
+Gender -> Stroke
+Hypertension -> Stroke
+}')
+
+plot(g)
+
+```
+
+**Describe the causal effects in the DAG from the perspective of each feature**
+
+The DAG has Stroke as the outcome variable.  Each of the other variables can
+be taken as the exposure variable in turn, The total causal and direct 
+causal effects of the exposure variable can be explained using this DAG.
+This DAG model implies that Gender is independent of Age. The DAG below 
+can be explained in various ways depending on which predictor is the exposure.
+
+With **Hypertension** as the Exposure: The only causal path is 
+
+**Hypertension ---> Stroke**
+
+Each of the other three independent variables have a directed edge
+into Hypertension. We must close these backdoor paths by stratifying 
+on each of them to measure the total causal effect on Stroke.
+To study either the total or direct causal effect of Hypertension
+on Stroke, all the predictors must be left in the model. 
+
+Thus the model for both total and direct causal effects is 
+
+**Stroke ~ Hypertension + BMI + Age + Gender**
+
+With **BMI** as the Exposure: The causal paths are 
+
+**BMI ---> Stroke**
+
+**BMI ---> Hypertension ---> Stroke**
+
+Both Age and Gender have a directed edge into BMI. We must close 
+these backdoor paths by stratifying on both of them to study 
+the total causal effect of BMI on Stroke.
+To study the direct causal effect of BMI on Stroke, all the  
+predictors must be left in the model.
+
+Thus the model for total causal effects is
+
+**Stroke ~ BMI + Age + Gender**
+
+And the model for direct causal effects is
+
+**Stroke ~ Hypertension + BMI + Age + Gender**
+
+With **Gender** as the Exposure: The causal paths are 
+
+**Gender ---> Stroke**
+
+**Gender ---> Hypertension ---> Stroke**
+
+**Gender ---> BMI ---> Stroke**
+
+There are no directed edges into Gender. So, there are no
+backdoor paths to close to study the total causal effect of 
+Gender on Stroke. To study the direct causal effect of Gender 
+on Stroke, all the predictors must be left in the model. 
+
+Thus the model for total causal effects is
+
+**Stroke ~ Gender**
+
+And the model for direct causal effects is
+
+**Stroke ~ Hypertension + BMI + Age + Gender**
+
+With **Age** as the Exposure: The causal paths are 
+
+**Age ---> Stroke**
+
+**Age ---> Hypertension ---> Stroke**
+
+**Age ---> BMI ---> Stroke**
+
+There are no directed edges into Age So, there are no
+backdoor paths to close to study the total causal effect of 
+Age on Stroke. To study the direct causal effect of Age 
+on Stroke, all the predictors must be left in the model. 
+
+Thus the model for total causal effects is
+
+**Stroke ~ Age**
+
+And the model for direct causal effects is
+
+**Stroke ~ Hypertension + BMI + Age + Gender**
+
+### Statistical model description 
+
+**Model: Stroke ~ Hypertension + BMI + Age + Gender**
+
+This is the model for the total causal effect of **Hypertension on Stroke**.
+
+The causal path: **Hypertension  -->  Stroke**
+
+This model is setup to predict whether or not a patient will get a stroke
+using all four of the independent variables retained in the dataset.
+The outcome variable is stroke which is '0' for those not getting stroke
+and '1' for those patients having a stroke.
+
+This statistical model runs Logistic Regression, so the logit 
+link function is used. We will use Gaussian priors for each of the 
+four parameters, where the mean is set at zero and use prior predictive 
+simulation to determine the best sigmas for each.
+
+$S_{i} \sim Binomial(1, p)$
+
+$logit(p_{i}) = \alpha_{G[i]} + \beta_{H[i]} + \beta_{A} * A_{i} + \beta_{B} * B_{i}$
+
+$\alpha_{G[i]} \sim Normal(0, \sigma_{g})$ for j = 1..2
+
+$\beta_{H[i]} \sim Normal(0, \sigma_{h})$ for j = 1..2
+
+$\beta_{A} \sim Normal(0, \sigma_{a})$ 
+
+$\beta_{B} \sim Normal(0, \sigma_{b})$
+
+This model also describes the direct causal effect
+of each of the predictors (Hypertension, BMI, Age, BMI) on Stroke.
+
+## Prior predictive simulation
+
+
+Below we run prior predictive simulation to determine the weakly 
+informative priors for the sigmas. The dataset has ample observations, 
+so that the choice of priors should not affect the model too much.
+
+
+**Data list for model**
+
+```{r message=TRUE, warning=FALSE}
+# This is the data list needed for the variable in the model
+# for the total causal effect of Hypertension on Stroke
+
+dat_list <- list(
+    S = stroke_df$stroke,
+    hid = stroke_df$hypertension,
+    gid = stroke_df$gender,
+    B = stroke_df$bmi_std,
+    A = stroke_df$age_std
+)
+
+```
+
+**Create prior plots using quap**
+
+According to the WHO, the leading cause of risk of stroke is hypertension.  
+They also say that women have a higher risk of stroke.  
+The good news for women is that they generally live longer than men. 
+The less than great news is that the risk for stroke increases with age, 
+which means that women typically have a higher stroke risk.
+
+In 2016, about 55,000 more women than men will have a stroke. 
+More women than men die from stroke each year because older 
+women out number older men. Strokes are the leading cause of 
+disability for women, and they kill twice as many women as 
+breast cancer.
+
+The gender and hypertension features share the same structure in the model.
+They are both categorical variables with two levels.
+We will model the difference between the levels to pick the best sigma.
+We will try a series four different sigmas.
+It seems reasonable to have Gaussian priors with mean of 0.
+
+For gender, I do not expect a big difference between male and female 
+risk of stroke. So, I will pick a prior with a small mean difference
+
+For hypertension, I expect a bigger difference between the groups 
+with and without hypertension for risk of stroke.
+So, I will pick a prior with a bigger mean difference
+
+```{r message=TRUE, warning=FALSE}
+# List of sigmas to try
+sigmas = c(3, 1, 0.5, 0.1)
+
+# Loop 4 times trying out each sigma 
+# Determine the mean difference and and plot
+for (s in sigmas)
+{
+    # Use quap to run the model
+    mod <- quap(
+        alist(
+            S ~ dbinom(1, p),
+            logit(p) <- g[gid],
+            g[gid] ~ dnorm(0, s)
+             ), data=dat_list)
+    
+    # Extract 100,000 samples from the prior to plot
+    prior <- extract.prior(mod, n=1e5)
+    
+    # Use sapply and the inv_logit function to simulate
+    # female (2) and male (1) samples for gender or
+    # hypertension (2) and no hypertension (1) for hypertension
+    p <- sapply(1:2, function(k) inv_logit(prior$g[, k]))
+    
+    # Get the absolute mean difference for this normal distribution
+    diff <- round(mean(abs(p[, 1] - p[, 2])), digits=2)
+    
+    # Display the density plot for the absolute difference
+    title <- paste("Category: N(0,", s,"): Diff: ", diff, sep="")
+    dens(abs(p[, 1] - p[, 2]), adj=0.1, lwd=4, col=3, main=title)
+
+}
+
+```
+
+**Explain prior output for gender and hypertension**
+
+The sigma = 3 plot shows a mean difference of 0.42 which is rather large and 
+the plot has too much probability greater than 0.5.
+
+The sigma = 1 plot shows a mean difference of 0.24 which is reasonable for
+hypertension and the plot shows most of the probability on the low side
+for smaller differences.
+
+The sigma = 0.5 plot shows a mean difference of 0.13 which is reasonable for
+gender and the plot shows most of the probability on the low side
+for smaller differences.
+
+The sigma = 0.1 plot shows a mean difference of 0.03 which is too tight. 
+So, I am choosing gender sigma of 0.5 and hypertension sigma of 1.
+
+**Create prior plots for age and BMI using quap**
+
+These two features share the same structure in the model.
+They are both numerical variables with slope parameters.
+We will plot three different normal distributions with
+a series of three different sigmas.
+
+Both Age and BMI values have been standardized.
+So, it is assumed that the prior be normal with a mean of 0.
+
+```{r message=TRUE, warning=FALSE}
+# List of sigmas to try
+sigmas = c(3, 1, 0.1)
+
+# Loop 3 times trying out each sigma 
+for (s in sigmas)
+{
+    # Use quap to run the model
+    mod <- quap(
+        alist(
+            S ~ dbinom(1, p),
+            logit(p) <- h  + bA*A,
+            h ~ dnorm(0, 1),
+            bA ~ dnorm(0, s)
+             ), data=dat_list)
+    
+    # Extract 100,000 samples from the prior to plot
+    prior <- extract.prior(mod, n=1e5)
+    # Display the density plot
+    title <- paste("N(0,", s,")", sep="")
+    dens(inv_logit(prior$bA), adj=0.1, lwd=4, col=4, main=title)
+   
+}
+
+```
+
+**Explain prior output for age and BMI**
+
+The sigma = 3 plot shows most of the probability either at 0 or 1..
+
+The sigma = 1 plot shows a mound shaped distribution with probability 
+covering the whole spectrum.
+
+The sigma = 0.1 plot shows a bell shaped distribution, but it only covers
+the probability range between 0.4 and 0.6.
+
+So, I am choosing both the age and BMI sigmas to be 1.
+
+These priors will be used with each of the models for this project
+
+
+### Model 1: Hypertension total causal model
+
+**Stroke ~ Hypertension + BMI + Age + Gender*
+
+This model uses all five of the variables.
+
+It can be used to study the total effect of Hypertension on Stroke.
+
+Causal Paths: 
+
+**Hypertension ---> Stroke**
+
+The ulam model uses the MCMC Hamiltonian Monte Carlo algorithm. The priors
+are set as determined above.
+
+Instead of using dummy variables for the categorical variables, index 
+variables are used where g1 = Male, g2 = Female, h1 = No Hypertension, and
+h2 = Hypertension.
+
+**Run the model using suggested priors**
+
+```{r message=TRUE, warning=FALSE}
+
+mod_H <- ulam(
+    alist(
+        S ~ dbinom(1, p),
+        logit(p) <- g[gid] + h[hid] + bA*A + bB*B,
+        g[gid] ~ dnorm(0, 0.5),
+        h[hid] ~ dnorm(0, 1),
+        bA ~ dnorm(0, 1),
+        bB ~ dnorm(0, 1)
+    ), data=dat_list, chains=4, log_lik=TRUE)
+
+#saveRDS(mod_H, "./final_mod_H.rds")
+```
+
+**Create a table for the ULAM precis output**
+
+```{r message=TRUE, warning=FALSE}
+
+# Load Saved model
+
+#mod_H <- readRDS("./final_mod_H.rds")
+
+# Create a table for transformed coefficients from precis output
+p_h <- precis(mod_H, depth=2)
+
+# Coefficient name
+Coefficient <- c('Male', 'Female', 'No Hypertension', 
+                 'Hypertension', 'Age', 'BMI')
+
+# Number of effective samples
+n_eff <- p_h$n_eff
+
+# Rhat4
+Rhat4 <- p_h$Rhat4
+
+# Create data frame
+ulam_df <- data.frame(Coefficient, n_eff, Rhat4)
+
+# Pretty up the data frame
+ulam_df %>% 
+    kbl(caption = "Ulam Diagnostics") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+
+**Explain ULAM precis output**
+
+The Rhat4 output for each parameter is 1 meaning that the four chains 
+converged nicely. The n_eff parameter measures the effective sample size
+for the given parameter.  It is an estimate of the number of independent 
+draws from the posterior distribution. It is based on the ability of the 
+draws to estimate the true mean value of the parameter. 
+Numbers close to the number of observations in the dataset are ideal.
+Auto correlation lowers the number of effective samples. 
+According to stan documentation, there no need to be alarmed, unless the 
+n_eff value is less than 10% of the number of observations.
+Each of these values are above 10%, with bmi above 25%.
+
+**Run trace and trank plots to show convergence of the MCMC chains**
+
+The trace and trank plots are used to show whether or not the 
+MCMC chains converged. We like fuzzy caterpillars for the trace plots 
+and trank chains that are interwoven with each other for good
+convergence.
+
+```{r message=TRUE, warning=FALSE}
+# Run traceplots 
+
+traceplot(mod_H, pars=c('g[1]','g[2]', 'h[1]', 'h[2]', 'bA', 'bB'))
+
+```
+
+
+```{r message=TRUE, warning=FALSE}
+# Run trankplots 
+
+trankplot(mod_H, pars=c('g[1]','g[2]', 'h[1]', 'h[2]', 'bA', 'bB'))
+
+```
+
+**Interpret the trace and trank plots**
+
+The trace plots each show nice fuzzy caterpillars and the trankplots show
+chains that are interwoven with each other for good convergence.
+ 
+
+## Posterior predictive check
+
+**Calculate and plot the contrast: Hypertension-No Hypertension** 
+
+```{r message=TRUE, warning=FALSE}
+# Calculate and plot the contrast 
+
+# Get samples from the posterior
+post_h <- extract.samples(mod_H)
+
+# Get no Hypertension
+post_h$ph0 <- inv_logit(post_h$h[,1])
+
+# Get Hypertension
+post_h$ph1 <- inv_logit(post_h$h[,2])
+
+# Calculate and plot the contrast: H1-H0
+post_h$H_contrast <- post_h$ph1 - post_h$ph0
+
+# Polt contrast
+dens(post_h$H_contrast, lwd=4, col=2, xlab="H1-H0 contrast (total)")
+abline(v=0, lty=3)
+
+```
+
+
+**Interpret the contrast: Hypertension-No Hypertension**
+
+There is a about a 4% difference on average for Hypertension over 
+No Hypertension. So, hypertension does have a 
+positive(negative: health wise) causal effect on risk of stroke.
+
+### Model 2: BMI total causal model
+
+**Model Stroke ~ BMI + Age + Gender**
+
+This model uses four of the five variables.
+
+It can be used to study the total effect of BMI on Stroke.
+
+Causal Paths: 
+
+**BMI ---> Stroke**
+
+**BMI ---> Hypertension ---> Stroke**
+
+$S_{i} \sim Binomial(1, p)$
+
+$logit(p_{i}) = \alpha_{G[i]} + \beta_{B} * B_{i} + \beta_{A} * A_{i}$
+
+$\alpha_{G[i]} \sim Normal(0, 0.5)$ for j = 1..2
+
+$\beta_{A} \sim Normal(0, 1)$ 
+
+$\beta_{B} \sim Normal(0, 1)$
+
+**Run the Model for BMI on Stroke**
+
+```{r message=TRUE, warning=FALSE}
+
+mod_B <- ulam(
+    alist(
+        S ~ dbinom(1, p),
+        logit(p) <- g[gid] + bA*A + bB*B,
+        g[gid] ~ dnorm(0, 0.5),
+        bA ~ dnorm(0, 1),
+        bB ~ dnorm(0, 1)
+
+    ), data=dat_list, chains=4, log_lik=TRUE)
+
+#saveRDS(mod_B, "./final_mod_B.rds")
+
+```
+
+**Create a table for the ULAM precis output**
+
+```{r message=TRUE, warning=FALSE}
+
+# Load Saved model
+
+#mod_B <- readRDS("./final_mod_B.rds")
+
+# Create a table for transformed coefficients from precis output
+p_b <- precis(mod_B, depth=2)
+
+# Coefficient name
+Coefficient <- c('Male', 'Female', 'Age', 'BMI')
+
+# Number of effective samples
+n_eff <- p_b$n_eff
+
+# Rhat4
+Rhat4 <- p_b$Rhat4
+
+# Create data frame
+ulam_df <- data.frame(Coefficient, n_eff, Rhat4)
+
+# Pretty up the data frame
+ulam_df %>% 
+    kbl(caption = "Ulam Diagnostics") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+
+
+**Explain precis output**
+
+The Rhat4 output for each parameter rounds to 1 meaning that the four 
+chains converged nicely. The n_eff parameter measures the effective 
+sample size for the given parameter. Each of these values are above 25%
+with BMI close to 50%.
+
+**Run trace and trank plots to show convergence of the MCMC chains**
+
+The trace and trank plots are used to show whether or not the 
+MCMC chains converged. We like fuzzy caterpillars for the trace plots 
+and trank chains that are interwoven with each other for good
+convergence.
+
+**Run trace and trank plots**
+
+```{r message=TRUE, warning=FALSE}
+
+# Run trace plot
+
+traceplot(mod_B, pars=c('g[1]','g[2]', 'bA', 'bB'))
+
+```
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Run trace plot
+
+trankplot(mod_B, pars=c('g[1]','g[2]', 'bA', 'bB'))
+
+```
+
+**Interpret the trace and trank plots**
+
+The trace plots each show nice fuzzy caterpillars and the trankplots show
+chains that are interwoven with each other for good convergence.
+ 
+**Transform coefficients and place output in a table**
+
+The coefficients are transformed using the exp function. 
+
+```{r message=TRUE, warning=FALSE}
+
+# Create a table for transformed coefficients from precis output
+p_b <- precis(mod_B, depth=2)
+
+# Coefficient name
+Coefficient <- c('Male', 'Female', 'Age', 'BMI')
+
+# Coefficient mean
+Mean <- exp(p_b$mean)
+
+# Coefficient standard deviation
+StdDev <- exp(p_b$sd)
+
+# Compatibility Interval for coefficient around mean
+LowCI <- exp(p_b$'5.5%')
+HighCI <- exp(p_b$'94.5%')
+
+# Create data frame
+coeff_df <- data.frame(Coefficient, Mean, StdDev, LowCI, HighCI)
+coeff_df <- coeff_df[4,]
+
+# Pretty up the data frame
+coeff_df %>% 
+    kbl(caption = "Transformed Coefficients") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+**Explain coefficients in the causal context**
+
+It is tricky to interpret each the mean coefficients and their
+compatibility intervals correctly. The coefficient represents what a unit 
+change in its variable has on the log odds of stroke risk, given 
+the rest of the equation stays constant. So, if the value of X1 is a, 
+a unit change would be a+1. So, the transformed coefficients and 
+compatibility interval values represent odds ratios.
+
+In this study we are mainly looking at the total causal effects. 
+For this model only the BMI values represent the total causal effect
+on stroke risk. In addition, the bmi values are standardized.
+
+A change of one standard deviation in bmi is associated with a change 
+of β standard deviations of the odds ratio. The transformed coefficient 
+for bmi is 1.076, which is the odds ratio. So, a change of one standard 
+deviation in bmi is associated with a change of 1.076 standard 
+deviations of the odds ratio. This is equivalent to a 1.076 - 1 = 0.076, 
+which is a 7.6% standard deviation increase. The compatibility interval 
+states that we are 89% confident that the given by compatibility interval 
+of **[-5.21%, 22.1%]** captures the true percent standard deviation change.
+This is a wide interval.
+
+
+## Posterior predictive check
+
+**Plot the BMI Coefficient Distribution** 
+
+```{r message=TRUE, warning=FALSE}
+# Calculate and plot the contrast 
+
+# Get samples from the posterior
+post_b <- extract.samples(mod_B)
+
+# Plot the density distribution
+dens(inv_logit(post_b$bB), lwd=4, col=2, 
+     xlab="BMI Coefficient Distribution")
+
+```
+
+**Interpret the posterior predictive plot**
+
+The BMI coefficient distribution runs between 0.45 and 0.58
+and is centered at approximately at 0.515. This has tighten 
+in the middle of the prior for this distribution.
+
+### Model Evaluation and Comparison: Model 1 and Model 2
+
+Overfitting and underfitting are two fundamental kinds of statistical 
+error in out models that lead to poor prediction. When evaluating the 
+accuracy of our models, we need to focus on out-of-sample approaches. 
+Cross validation is a popular strategy for estimating a model's 
+predictive accuracy that does the testing on observations that are 
+left out during training. Ideally, we want to use leave-one-out 
+cross-validation, which can result in running 'n' models, 
+where 'n' is the number of observations in the dataset.
+
+There are two very good approximations that can be used which bypass 
+the need to run 'n' models: PSIS: Pareto-Smoothed Importance Sampling 
+and WAIC: Widely Applicable Information Criteria. 
+
+**Use PSIS and WAIC on Model 1 and Model 2**
+
+```{r message=TRUE, warning=FALSE}
+# Compare the total causal effect models for hypertension and BMI
+
+comp_psis <- compare(mod_H, mod_B, func=PSIS)
+
+comp_waic <- compare(mod_H, mod_B, func=WAIC)
+
+# Coefficient name
+Model <- c('mod_H', 'mod_B')
+
+# PSIS score
+PSIS <- comp_psis$PSIS
+
+# PSIS score
+WAIC <- comp_waic$WAIC
+
+# Create data frame
+comp_df <- data.frame(Model, PSIS, WAIC)
+
+# Pretty up the data frame
+comp_df %>% 
+    kbl(caption = "Model Comparison") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+**Interpret the results of running PSIS and WAIC**
+
+Both of these criteria claim that mod_H is the better model for 
+out-of-sample prediction, giving that model the lowest score. 
+In fact both criteria scored both models the same.
+This the model that has all the predictors in it. 
+It can be used to get the direct causal effect of each predictor 
+on risk of Stroke and the total causal effect for the hypertension
+predictor on the risk of Stroke.
+
+### Model 3: Gender total causal model
+
+**Model Stroke ~ Gender**
+
+This model uses only two variables.
+
+It can be used to study the total effect of Gender on Stroke.
+
+Causal Paths: 
+
+**Gender ---> Stroke**
+
+**Gender ---> Hypertension ---> Stroke**
+
+**Gender ---> BMI ---> Stroke**
+
+$S_{i} \sim Binomial(1, p)$
+
+$logit(p_{i}) = \alpha_{G[i]}$
+
+$\alpha_{G[i]} \sim Normal(0, 0.5)$ for j = 1..2
+
+**Run the Model for Gender on Stroke**
+
+```{r message=TRUE, warning=FALSE}
+
+#mod_G <- ulam(
+#    alist(
+#        S ~ dbinom(1, p),
+#        logit(p) <- g[gid],
+#        g[gid] ~ dnorm(0, 0.5)
+#
+#    ), data=dat_list, chains=4, log_lik=TRUE)
+#
+#saveRDS(mod_G, "./final_mod_G.rds")
+
+```
+
+
+**Create a table for the ULAM precis output**
+
+```{r message=TRUE, warning=FALSE}
+# Load Saved model
+
+mod_G <- readRDS("./final_mod_G.rds")
+
+# Create a table for transformed coefficients from precis output
+p_g <- precis(mod_G, depth=2)
+
+# Coefficient name
+Coefficient <- c('Male', 'Female')
+
+# Number of effective samples
+n_eff <- p_g$n_eff
+
+# Rhat4
+Rhat4 <- p_g$Rhat4
+
+# Create data frame
+ulam_df <- data.frame(Coefficient, n_eff, Rhat4)
+
+# Pretty up the data frame
+ulam_df %>% 
+    kbl(caption = "Ulam Diagnostics") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+**Explain precis output**
+
+The Rhat4 output for each parameter rounds to 1 meaning that 
+the four chains converged nicely. The n_eff parameter measures 
+the effective sample size for the given parameter. Each of these 
+values are above 25%.
+
+**Run trace and trank plots to show convergence of the MCMC chains**
+
+The trace and trank plots are used to show whether or not the 
+MCMC chains converged. We like fuzzy caterpillars for the trace plots 
+and trank chains that are interwoven with each other for good
+convergence.
+
+**Run trace and trank plots**
+
+```{r message=TRUE, warning=FALSE}
+
+# Run trace plot
+
+traceplot(mod_G, pars=c('g[1]','g[2]'))
+
+```
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Run trace plot
+
+trankplot(mod_G, pars=c('g[1]','g[2]'))
+
+```
+
+
+**Interpret the trace and trank plots**
+
+The trace plots each show nice fuzzy caterpillars and the trankplots show
+chains that are interwoven with each other for good convergence.
+
+
+## Posterior predictive check
+
+**Calculate and plot the contrast: Male-Female** 
+
+```{r message=TRUE, warning=FALSE}
+
+# Calculate and plot the contrast 
+
+# Get samples from the posterior
+post_g <- extract.samples(mod_G)
+
+# Get no Hypertension
+post_g$pgm <- inv_logit(post_g$g[,1])
+
+# Get Hypertension
+post_g$pgf <- inv_logit(post_g$g[,2])
+
+# Calculate and plot the contrast: H1-H0
+post_g$G_contrast <- post_g$pgm - post_g$pgf
+
+# Polt contrast
+dens(post_g$G_contrast, lwd=4, col=2, xlab="M-F contrast (total)")
+abline(v=0, lty=3)
+
+```
+
+**Interpret the contrast: Male-Female**
+
+There is a about a 1% difference on average for Males over 
+Females for risk of stroke. So, gender does have a small
+causal effect on risk of stroke.
+
+### Model 4: Age total causal model
+
+**Model Stroke ~ Age**
+
+This model uses only two variables.
+
+It can be used to study the total effect of Age on Stroke.
+
+Causal Paths: 
+
+**Age ---> Stroke**
+
+**Age ---> Hypertension ---> Stroke**
+
+**Age ---> BMI ---> Stroke**
+
+$S_{i} \sim Binomial(1, p)$
+
+$logit(p_{i}) = \beta_{A} * A_{i}$
+
+$\beta_{A} \sim Normal(0, 1)$
+
+**Run the Model for Age on Stroke**
+
+```{r message=TRUE, warning=FALSE}
+
+#mod_A <- ulam(
+#    alist(
+#        S ~ dbinom(1, p),
+#        logit(p) <- bA*A,
+#        bA ~ dnorm(0, 1)
+#
+#    ), data=dat_list, chains=4, log_lik=TRUE)
+#
+#saveRDS(mod_A, "./final_mod_A.rds")
+
+```
+
+
+**Create a table for the ULAM precis output**
+
+```{r message=TRUE, warning=FALSE}
+# Load Saved model
+
+mod_A <- readRDS("./final_mod_A.rds")
+
+# Create a table for transformed coefficients from precis output
+p_a <- precis(mod_A, depth=2)
+
+# Coefficient name
+Coefficient <- c('Age')
+
+# Number of effective samples
+n_eff <- p_a$n_eff
+
+# Rhat4
+Rhat4 <- p_a$Rhat4
+
+# Create data frame
+ulam_df <- data.frame(Coefficient, n_eff, Rhat4)
+
+# Pretty up the data frame
+ulam_df %>% 
+    kbl(caption = "Ulam Diagnostics") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+**Explain precis output**
+
+The Rhat4 output for the parameter rounds to 1 meaning that the 
+four chains converged nicely. The n_eff parameter measures the 
+effective sample size for the given parameter. According to stan documentation, there no need to be alarmed, unless the n_eff value 
+is less than 10% of the number of observations. Each of these values are above 25%.
+
+**Run trace and trank plots to show convergence of the MCMC chains**
+
+The trace and trank plots are used to show whether or not the 
+MCMC chains converged. We like fuzzy caterpillars for the trace plots 
+and trank chains that are interwoven with each other for good
+convergence.
+
+**Run trace and trank plots**
+
+```{r message=TRUE, warning=FALSE}
+
+# Run trace plot
+
+traceplot(mod_A, pars=c('bA'))
+
+```
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Run trace plot
+
+trankplot(mod_A, pars=c('bA'))
+
+```
+
+
+**Interpret the trace and trank plots**
+
+The trace plots each show nice fuzzy caterpillars and the trankplots show
+chains that are interwoven with each other for good convergence.
+ 
+
+
+```{r message=TRUE, warning=FALSE}
+
+# Create a table for transformed coefficients from precis output
+
+# Coefficient name
+Coefficient <- c('Age')
+
+# Coefficient mean
+Mean <- exp(p_a$mean)
+
+# Coefficient standard deviation
+StdDev <- exp(p_a$sd)
+
+# Compatibility Interval for coefficient around mean
+LowCI <- exp(p_a$'5.5%')
+HighCI <- exp(p_a$'94.5%')
+
+# Create data frame
+coeff_df <- data.frame(Coefficient, Mean, StdDev, LowCI, HighCI)
+
+# Pretty up the data frame
+coeff_df %>% 
+    kbl(caption = "Transformed Coefficients") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+**Explain coefficients in the causal context**
+
+In this study we are mainly looking at the total causal effects. 
+For this model the age values represent the total causal effect
+on stroke risk. In addition, the age values are standardized.
+
+A change of one standard deviation in bmi is associated with a change 
+of β standard deviations of the odds ratio. The transformed coefficient 
+for age is 1.231, which is the odds ratio. So, a change of one standard 
+deviation in age is associated with a change of 1.076 standard 
+deviations of the odds ratio. This is equivalent to a 1.231 - 1 = 0.231, 
+which is a 23.1% standard deviation increase. The compatibility interval 
+states that we are 89% confident that the given by compatibility interval 
+of **[0.17%, 29.5%]** captures the true percent standard deviation change.
+This is a wide interval.
+
+
+## Posterior predictive check
+
+**Calculate and plot the contrast: Hypertension-No Hypertension** 
+
+```{r message=TRUE, warning=FALSE}
+# Calculate and plot the contrast 
+
+# Get samples from the posterior
+post_a <- extract.samples(mod_A)
+
+# Plot the density distribution
+dens(inv_logit(post_a$bA), lwd=4, col=2, xlab="Age Coefficient Distribution")
+
+```
+
+
+**Interpret the posterior predictive plot**
+
+The Age coefficient distribution runs between 0.52 and 0.59
+and is centered at approximately at 0.555. This has tighten 
+in the middle of the prior for this distribution.
+
+
+**Tabulate Results**
+
+```{r message=TRUE, warning=FALSE}
+
+# Coefficient name
+Coefficient <- c('Hypertension', 'BMI', 'Gender', 'Age')
+
+# Coefficient mean
+Mean <- c('4%', '7.6%', '1%', '23.1%')
+
+# Compatibility Interval for coefficient around mean
+LowCI <- c('1.5%', '-5.21%', '-0.5%', '17%')
+HighCI <- c('7%', '22.1%', '2.5%', '29.5%')
+
+# Create data frame
+coeff_df <- data.frame(Coefficient, Mean, LowCI, HighCI)
+
+# Pretty up the data frame
+coeff_df %>% 
+    kbl(caption = "Transformed Coefficients") %>%
+    kable_classic(full_width = F, html_font = "Verdana")
+
+```
+
+## Conclusion
+
+According to the World Health Organization (WHO), stroke is the 2nd leading 
+cause of death globally. In the medical literature it states that hypertension 
+is the most prevalent risk factor for stroke. The literature also states 
+that overweight individuals have twice the risk factor for stroke than normal 
+weight individuals.
+
+My main goal was to compare the total causal effect of hypertension on stroke  
+risk to the total causal effect of BMI (body mass index) on stroke risk. 
+However, I also looked at the total causal effect of age and gender 
+on stroke risk. 
+
+Estimates were computed using model coefficients for the age and BMI, and
+the contrasts were used for Gender and hypertension. 
+
+These results were tabulated and shown above.
+Using this dataset, I conclude that Age seemed to have the strongest
+total causal effect of stroke risk, followed by BMI, and hypertension.
+
+Gender has a minimal effect. 
+ 
+
+## Session Information
+
+
+```{r message=TRUE, warning=FALSE}
+
+sessionInfo()
+
+```
+
+
+
+## References
+
+The following internet documents were used to reference the risk factors 
+for stroke. This aided me in deciding which variables to keep in the dataset.
+
+[Dataset Source](https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset)
+
+
+[Hypertension and Stroke: Update on Treatment](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6659031/pdf/ecr-14-2-111.pdf)
+
+
+[Body mass index relates weight to height differently in women and older adults](https://academic.oup.com/jpubhealth/article/38/3/607/2239800)
+
+
+[Being Overweight Doubles Your Chances of Having a Stroke](https://www.verywellhealth.com/being-overweight-and-stroke-risk-3146345)
+
+
+[Body mass index relates weight to height differently in women and older adults](https://academic.oup.com/jpubhealth/article/38/3/607/2239800)
+
+
+[Sex and Gender Differences in Control of Blood Pressure](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4283814/pdf/nihms643459.pdf)
+
+
+[Is High Blood Pressure in Older Age Inevitable?](https://www.healthline.com/health-news/high-blood-pressure-in-older-age-ways-to-lower-risk)
+
+[Heart Health and Aging](https://www.nia.nih.gov/health/heart-health-and-aging#:~:text=Adults%20age%2065%20and%20older,risk%20of%20developing%20cardiovascular%20disease.)
+
+
+[Aging and ischemic stroke](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6535078/pdf/aging-11-101931.pdf)
+
+
+[Sex Differences in Stroke Epidemiology](https://utswmed.org/medblog/stroke-symptoms-women-risk/)
