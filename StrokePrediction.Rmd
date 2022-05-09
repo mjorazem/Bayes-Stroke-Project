@@ -1125,7 +1125,7 @@ mod_G <- ulam(
 ```{r message=TRUE, warning=FALSE}
 # Load Saved model
 
-mod_G <- readRDS("./final_mod_G.rds")
+#mod_G <- readRDS("./final_mod_G.rds")
 
 # Create a table for transformed coefficients from precis output
 p_g <- precis(mod_G, depth=2)
@@ -1265,7 +1265,7 @@ mod_A <- ulam(
 ```{r message=TRUE, warning=FALSE}
 # Load Saved model
 
-mod_A <- readRDS("./final_mod_A.rds")
+#mod_A <- readRDS("./final_mod_A.rds")
 
 # Create a table for transformed coefficients from precis output
 p_a <- precis(mod_A, depth=2)
