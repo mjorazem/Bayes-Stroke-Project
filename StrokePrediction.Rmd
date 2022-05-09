@@ -1107,14 +1107,14 @@ $\alpha_{G[i]} \sim Normal(0, 0.5)$ for j = 1..2
 
 ```{r message=TRUE, warning=FALSE}
 
-#mod_G <- ulam(
-#    alist(
-#        S ~ dbinom(1, p),
-#        logit(p) <- g[gid],
-#        g[gid] ~ dnorm(0, 0.5)
-#
-#    ), data=dat_list, chains=4, log_lik=TRUE)
-#
+mod_G <- ulam(
+    alist(
+        S ~ dbinom(1, p),
+        logit(p) <- g[gid],
+        g[gid] ~ dnorm(0, 0.5)
+
+    ), data=dat_list, chains=4, log_lik=TRUE)
+
 #saveRDS(mod_G, "./final_mod_G.rds")
 
 ```
@@ -1247,14 +1247,14 @@ $\beta_{A} \sim Normal(0, 1)$
 
 ```{r message=TRUE, warning=FALSE}
 
-#mod_A <- ulam(
-#    alist(
-#        S ~ dbinom(1, p),
-#        logit(p) <- bA*A,
-#        bA ~ dnorm(0, 1)
-#
-#    ), data=dat_list, chains=4, log_lik=TRUE)
-#
+mod_A <- ulam(
+    alist(
+        S ~ dbinom(1, p),
+        logit(p) <- bA*A,
+        bA ~ dnorm(0, 1)
+
+    ), data=dat_list, chains=4, log_lik=TRUE)
+
 #saveRDS(mod_A, "./final_mod_A.rds")
 
 ```
